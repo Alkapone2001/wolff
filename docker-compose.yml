@@ -1,0 +1,36 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: wolffuser
+      POSTGRES_PASSWORD: wolffpassword
+      POSTGRES_DB: wolffdb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5433"
+
+  backend:
+    build:
+      context: ./
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://wolffuser:wolffpassword@db:5432/wolffdb
+      OPENAI_API_KEY: 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
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+
+  frontend:
+    build:
+      context: ../wolff-ui
+    ports:
+      - "3000:80"
+
+volumes:
+  pgdata:
