@@ -1,9 +1,8 @@
 from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException
+from routes import message_history, summarize
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from PIL import Image
 import pytesseract
-import io
 import json
 import traceback
 from dotenv import load_dotenv
@@ -26,14 +25,22 @@ client = OpenAI()
 
 app = FastAPI()
 
+# Include custom routers
+app.include_router(message_history.router)
+
+app.include_router(summarize.router)
+
+
+# CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # adjust frontend URL if needed
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Dependency to get DB session
 def get_db():
     db = SessionLocal()
     try:
@@ -41,6 +48,7 @@ def get_db():
     finally:
         db.close()
 
+# Helper function to clean GPT output
 def clean_gpt_json_response(text):
     """
     Removes markdown formatting and attempts to parse JSON block from GPT response.
@@ -122,17 +130,26 @@ Invoice Text:
                     try:
                         data[key] = float(data[key].replace(",", "."))
                     except ValueError:
-                        pass  # Ignore if invalid
+                        pass
+
+        # ✅ Log messages to MessageHistory
+        context_manager.log_message(db, client_id, "user", prompt)
+        context_manager.log_message(db, client_id, "assistant", raw_response)
 
     except Exception as e:
         print("🔥 GPT EXCEPTION:")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"OpenAI API error: {e}")
 
-    # Register invoice
+    # Register invoice if possible
     invoice_number = data.get("invoice_number") if isinstance(data, dict) else None
     if invoice_number:
-        context_manager.add_invoice(db, client_id, invoice_number)
+        invoice = context_manager.add_invoice(db, client_id, invoice_number)
+        invoice.ocr_text = ocr_text
+        invoice.prompt_used = prompt
+        invoice.llm_response_raw = raw_response
+        db.commit()
+
         context_manager.update_context_step(db, client_id, "invoice_processed")
         context_manager.update_last_message(db, client_id, f"Processed invoice {invoice_number}")
 

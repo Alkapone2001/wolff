@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from models import ClientContext, InvoiceContext
+from models import ClientContext, InvoiceContext, MessageHistory
 from datetime import datetime
 
 def get_or_create_context(db: Session, client_id: str) -> ClientContext:
@@ -44,3 +44,13 @@ def update_last_message(db: Session, client_id: str, message: str) -> ClientCont
 
 def get_context(db: Session, client_id: str) -> ClientContext:
     return db.query(ClientContext).filter(ClientContext.client_id == client_id).first()
+
+def log_message(db, client_id: str, role: str, content: str):
+    message = MessageHistory(
+        client_id=client_id,
+        role=role,
+        content=content,
+        timestamp=datetime.utcnow()
+    )
+    db.add(message)
+    db.commit()
