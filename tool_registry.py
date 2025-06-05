@@ -45,5 +45,33 @@ class ToolRegistry:
             for name, entry in self._registry.items()
         }
 
-# Export a single global registry instance:
+# Export the singleton registry
 tool_registry = ToolRegistry()
+
+
+# -------------------------------------------------------------------------------
+# === Register existing tools here: ===
+# -------------------------------------------------------------------------------
+from tools.parse_invoice import parse_invoice_tool
+tool_registry.register(
+    name="parse_invoice",
+    fn=parse_invoice_tool,
+    description="Given a base64‐encoded PDF, return supplier, date, invoice_number, total, vat.",
+    input_schema={
+        "file_bytes": "base64 string of the PDF"
+    }
+)
+
+# <<-- ADD THE NEW CATEGORIZE_EXPENSE REGISTRATION BELOW: -->>
+from tools.categorize_expense import categorize_expense_tool
+tool_registry.register(
+    name="categorize_expense",
+    fn=categorize_expense_tool,
+    description="Given invoice_number, supplier, and line_items, return a suggested GL category for each line.",
+    input_schema={
+        "client_id": "string",
+        "invoice_number": "string",
+        "supplier": "string",
+        "line_items": "List of { description: string, amount: number }"
+    }
+)
