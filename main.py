@@ -1,4 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException
+from routes import message_history
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import pytesseract
@@ -23,6 +24,10 @@ models.Base.metadata.create_all(bind=engine)
 client = OpenAI()
 
 app = FastAPI()
+
+# Include custom routers
+app.include_router(message_history.router)
+
 
 # CORS setup
 app.add_middleware(
