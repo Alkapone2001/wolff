@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import MessageHistory
-from utils.summarization import summarize_messages  # updated import
+from summarization import summarize_messages   # root‐level import
 from datetime import datetime
+from typing import List
 
-router = APIRouter()
+router = APIRouter(tags=["Summarization"])
 
-# Dependency to get a DB session
 def get_db():
     db = SessionLocal()
     try:
@@ -19,10 +19,18 @@ def get_db():
 
 @router.post("/summarize-context/{client_id}")
 def summarize_context(client_id: str, db: Session = Depends(get_db)):
-    # Fetch all user/assistant messages for this client, in chronological order
+    """
+    POST /summarize-context/{client_id}
+    Summarize all user/assistant messages for the given client_id.
+    Stores the summary back into MessageHistory (role="summary").
+    """
+    # 1. Fetch all user & assistant messages (chronological)
     messages = (
         db.query(MessageHistory)
-        .filter(MessageHistory.client_id == client_id, MessageHistory.role.in_(["user", "assistant"]))
+        .filter(
+            MessageHistory.client_id == client_id,
+            MessageHistory.role.in_(["user", "assistant"])
+        )
         .order_by(MessageHistory.timestamp.asc())
         .all()
     )
@@ -30,18 +38,17 @@ def summarize_context(client_id: str, db: Session = Depends(get_db)):
     if not messages:
         raise HTTPException(status_code=404, detail="No messages found for this client_id")
 
-    # Convert ORM objects into simple dicts for summarization
+    # 2. Convert them to simple dicts
     chat = [{"role": m.role, "content": m.content} for m in messages]
 
-    # Call our new summarize_messages function
+    # 3. Call the summarizer
     try:
         summary = summarize_messages(chat)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Summarization error: {e}")
 
-    # Optionally, store the summary back into MessageHistory as a “summary” role
-    from models import MessageHistory as MH  # avoid circular import
-    summary_entry = MH(
+    # 4. Store the summary as a new MessageHistory entry
+    summary_entry = MessageHistory(
         client_id=client_id,
         role="summary",
         content=summary,

@@ -1,3 +1,5 @@
+# models.py
+
 from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, Text
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
@@ -16,7 +18,11 @@ class ClientContext(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     invoices = relationship("InvoiceContext", back_populates="client_context")
-    messages = relationship("MessageHistory", back_populates="client_context", cascade="all, delete-orphan")  # ✅ new
+    messages = relationship(
+        "MessageHistory",
+        back_populates="client_context",
+        cascade="all, delete-orphan"
+    )
 
 class InvoiceContext(Base):
     __tablename__ = 'invoice_contexts'
@@ -27,6 +33,7 @@ class InvoiceContext(Base):
     date_uploaded = Column(DateTime, default=datetime.utcnow)
     client_id = Column(String, ForeignKey('client_contexts.client_id'))
 
+    # MCP Fields you already have:
     ocr_text = Column(Text, nullable=True)
     prompt_used = Column(Text, nullable=True)
     llm_response_raw = Column(Text, nullable=True)
@@ -38,7 +45,7 @@ class MessageHistory(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     client_id = Column(String, ForeignKey('client_contexts.client_id'), index=True)
-    role = Column(String)  # 'user' or 'assistant'
+    role = Column(String)      # 'user' / 'assistant' / 'summary'
     content = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
