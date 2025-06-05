@@ -16,7 +16,7 @@ class ClientContext(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     invoices = relationship("InvoiceContext", back_populates="client_context")
-
+    messages = relationship("MessageHistory", back_populates="client_context", cascade="all, delete-orphan")  # ✅ new
 
 class InvoiceContext(Base):
     __tablename__ = 'invoice_contexts'
@@ -27,9 +27,19 @@ class InvoiceContext(Base):
     date_uploaded = Column(DateTime, default=datetime.utcnow)
     client_id = Column(String, ForeignKey('client_contexts.client_id'))
 
-    # ✅ MCP Fields
     ocr_text = Column(Text, nullable=True)
     prompt_used = Column(Text, nullable=True)
     llm_response_raw = Column(Text, nullable=True)
 
     client_context = relationship("ClientContext", back_populates="invoices")
+
+class MessageHistory(Base):
+    __tablename__ = "message_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(String, ForeignKey('client_contexts.client_id'), index=True)
+    role = Column(String)  # 'user' or 'assistant'
+    content = Column(Text)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    client_context = relationship("ClientContext", back_populates="messages")

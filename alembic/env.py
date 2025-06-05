@@ -8,7 +8,7 @@ from sqlalchemy import engine_from_config, pool
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import models + metadata
-from models import Base
+from models import Base, MessageHistory
 from models import ClientContext, InvoiceContext  # needed for autogenerate
 from database import DATABASE_URL
 
