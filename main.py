@@ -1,9 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from PIL import Image
 import pytesseract
-import io
 import json
 import traceback
 from dotenv import load_dotenv
@@ -28,7 +26,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # adjust frontend URL if needed
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -132,7 +130,12 @@ Invoice Text:
     # Register invoice
     invoice_number = data.get("invoice_number") if isinstance(data, dict) else None
     if invoice_number:
-        context_manager.add_invoice(db, client_id, invoice_number)
+        invoice = context_manager.add_invoice(db, client_id, invoice_number)
+        invoice.ocr_text = ocr_text
+        invoice.prompt_used = prompt
+        invoice.llm_response_raw = raw_response
+        db.commit()
+
         context_manager.update_context_step(db, client_id, "invoice_processed")
         context_manager.update_last_message(db, client_id, f"Processed invoice {invoice_number}")
 

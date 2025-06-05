@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey
+from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, Text
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 
@@ -17,6 +17,7 @@ class ClientContext(Base):
 
     invoices = relationship("InvoiceContext", back_populates="client_context")
 
+
 class InvoiceContext(Base):
     __tablename__ = 'invoice_contexts'
 
@@ -25,5 +26,10 @@ class InvoiceContext(Base):
     status = Column(String, default="received")
     date_uploaded = Column(DateTime, default=datetime.utcnow)
     client_id = Column(String, ForeignKey('client_contexts.client_id'))
+
+    # ✅ MCP Fields
+    ocr_text = Column(Text, nullable=True)
+    prompt_used = Column(Text, nullable=True)
+    llm_response_raw = Column(Text, nullable=True)
 
     client_context = relationship("ClientContext", back_populates="invoices")
