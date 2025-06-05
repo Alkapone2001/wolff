@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal, engine
 import models
 import context_manager
-from routes import message_history, summarize
+from routes import message_history, summarize, categorize
 from schemas.mcp import ModelContext, MessageItem, Memory
 from schemas.tools import ToolDefinition
 from tool_registry import tool_registry
@@ -41,6 +41,9 @@ app = FastAPI()
 app.include_router(message_history.router)
 
 app.include_router(summarize.router)
+
+# <<< Add this line: >>>
+app.include_router(categorize.router)
 
 app.add_middleware(
     CORSMiddleware,
