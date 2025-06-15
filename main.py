@@ -16,6 +16,7 @@ from datetime import datetime
 import json
 import base64
 from tools.parse_invoice import parse_invoice_tool
+from routes.xero_auth import router as xero_auth_router
 
 # Load environment variables (OPENAI_API_KEY etc.)
 load_dotenv()
@@ -39,6 +40,8 @@ app = FastAPI()
 
 # Include custom routers
 app.include_router(message_history.router)
+
+app.include_router(xero_auth_router)
 
 app.include_router(summarize.router)
 
