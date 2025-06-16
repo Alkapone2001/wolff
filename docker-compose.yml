@@ -24,7 +24,7 @@ services:
       XERO_CLIENT_ID: 3C6119587F2A4D5CA4D1B8FD2AE955DB
       XERO_CLIENT_SECRET: -t6PLg5PJVzy1PsmByyw7u2j8IEkQ3BqAAXf4_BzDcqlmclZ
       XERO_REDIRECT_URI: http://localhost:8000/xero/callback
-      XERO_TENANT_ID:      # leave blank for now; we’ll obtain it from the tokens
+      XERO_TENANT_ID:
     ports:
       - "8000:8000"
     volumes:

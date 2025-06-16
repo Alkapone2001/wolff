@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal, engine
 import models
 import context_manager
-from routes import message_history, summarize, categorize
+from routes import message_history, summarize, categorize, book
 from schemas.mcp import ModelContext, MessageItem, Memory
 from schemas.tools import ToolDefinition
 from tool_registry import tool_registry
@@ -15,7 +15,6 @@ from dotenv import load_dotenv
 from datetime import datetime
 import json
 import base64
-from tools.parse_invoice import parse_invoice_tool
 from routes.xero_auth import router as xero_auth_router
 
 # Load environment variables (OPENAI_API_KEY etc.)
@@ -27,21 +26,14 @@ models.Base.metadata.create_all(bind=engine)
 # Initialize OpenAI client (v1+ API)
 client = OpenAI()
 
-tool_registry.register(
-    name="parse_invoice",
-    fn=parse_invoice_tool,
-    description="Given a base64-encoded PDF, return supplier, date, invoice_number, total, vat.",
-    input_schema={
-        "file_bytes": "base64 string of the PDF"
-    }
-)
-
 app = FastAPI()
 
 # Include custom routers
 app.include_router(message_history.router)
 
 app.include_router(xero_auth_router)
+
+app.include_router(book.router)
 
 app.include_router(summarize.router)
 
