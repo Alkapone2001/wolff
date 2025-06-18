@@ -16,20 +16,23 @@ def summarize_messages(messages: list[dict]) -> str:
     build a single conversation string, call the LLM to summarize it,
     and return the summary text.
     """
-    # Build a plain-text conversation history
+    # 1. Build a plain-text conversation history
     conversation = ""
     for msg in messages:
         role = msg.get("role", "unknown")
         content = msg.get("content", "")
         conversation += f"{role}: {content}\n"
 
-    # Construct a summarization prompt (system + user)
-    # Feel free to tweak the system message to match your accounting context
-    system_message = "You are an accounting assistant. Concisely summarize the following conversation so it can be used as context in the future."
+    # 2. Create a system/user prompt for summarization
+    system_message = (
+        "You are an accounting assistant. Summarize the following conversation "
+        "as concisely as possible, preserving important details for future context."
+    )
     user_message = conversation
 
+    # 3. Call the model
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # or whichever model you prefer
+        model="gpt-4o-mini",  # adjust if you prefer a different model
         messages=[
             {"role": "system", "content": system_message},
             {"role": "user", "content": user_message},
@@ -37,6 +40,6 @@ def summarize_messages(messages: list[dict]) -> str:
         temperature=0,
     )
 
-    # Extract the summary from the LLM’s reply
-    summary = response.choices[0].message.content
-    return summary
+    # 4. Extract and return the summary
+    summary_text = response.choices[0].message.content
+    return summary_text

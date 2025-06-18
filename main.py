@@ -1,26 +1,29 @@
+# main.py
+
 from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException
-from routes import message_history, summarize
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-import pytesseract
-import json
-import traceback
-from dotenv import load_dotenv
-from openai import OpenAI
-from pdf2image import convert_from_bytes
-import re
-
 from database import SessionLocal, engine
 import models
 import context_manager
+from routes import message_history, summarize, categorize, book
+from schemas.mcp import ModelContext, MessageItem, Memory
+from schemas.tools import ToolDefinition
+from tool_registry import tool_registry
+from openai import OpenAI
+from dotenv import load_dotenv
+from datetime import datetime
+import json
+import base64
+from routes.xero_auth import router as xero_auth_router
 
-# Load env vars
+# Load environment variables (OPENAI_API_KEY etc.)
 load_dotenv()
 
-# Create DB tables if they don't exist
+# Create tables if they don’t exist
 models.Base.metadata.create_all(bind=engine)
 
-# Initialize OpenAI client
+# Initialize OpenAI client (v1+ API)
 client = OpenAI()
 
 app = FastAPI()
@@ -28,10 +31,15 @@ app = FastAPI()
 # Include custom routers
 app.include_router(message_history.router)
 
+app.include_router(xero_auth_router)
+
+app.include_router(book.router)
+
 app.include_router(summarize.router)
 
+# <<< Add this line: >>>
+app.include_router(categorize.router)
 
-# CORS setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -48,26 +56,6 @@ def get_db():
     finally:
         db.close()
 
-# Helper function to clean GPT output
-def clean_gpt_json_response(text):
-    """
-    Removes markdown formatting and attempts to parse JSON block from GPT response.
-    """
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?", "", text)
-    text = re.sub(r"```$", "", text)
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                return {"error": "Failed to parse extracted JSON", "raw_response": text}
-        return {"error": "Failed to parse GPT output", "raw_response": text}
-
 @app.post("/process-invoice/")
 async def process_invoice(
     file: UploadFile = File(...),
@@ -76,99 +64,86 @@ async def process_invoice(
 ):
     client_id = request.headers.get("X-Client-ID", "default_client")
 
-    # Validate file type
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    # 1. Read raw PDF bytes and base64‐encode them
+    raw_bytes = await file.read()
+    file_b64 = base64.b64encode(raw_bytes).decode()  # Always valid padding
 
-    contents = await file.read()
-
-    # OCR from PDF
+    # 2. Build the MCP context (memory + messages)
     try:
-        pages = convert_from_bytes(contents, dpi=300)
-        ocr_text = "\n".join([pytesseract.image_to_string(page) for page in pages])
+        model_ctx: ModelContext = context_manager.build_model_context(db, client_id)
     except Exception as e:
-        print("🔥 OCR EXCEPTION:")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=400, detail=f"Error processing PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Context build error: {e}")
 
-    # Build context summary for GPT
+    # 3. Append a “user” message telling the model to call parse_invoice
+    model_ctx.messages.append(
+        MessageItem(
+            role="user",
+            content="Please parse my invoice PDF with the parse_invoice tool.",
+            timestamp=datetime.utcnow()
+        )
+    )
+
+    # 4. Add all registered tools into the context, so the LLM knows what exists
+    all_tools = []
+    for name, info in tool_registry.list_tools().items():
+        all_tools.append(
+            ToolDefinition(
+                name=name,
+                description=info["description"],
+                input_schema=info["input_schema"]
+            )
+        )
+    model_ctx.tools = all_tools
+
+    # 5. Send the MCP context to GPT, but only ask it to choose the tool name
+    system_prompt = {
+        "role": "system",
+        "content": json.dumps(model_ctx.dict(), default=str)
+    }
+    user_prompt = {
+        "role": "user",
+        "content": (
+            "You have a tool called \"parse_invoice\". "
+            "Simply respond with JSON: { \"tool\": \"parse_invoice\" } "
+            "— do NOT attempt to supply or guess the Base64 yourself."
+        )
+    }
+
     try:
-        context = context_manager.get_or_create_context(db, client_id)
-        context_summary = f"Current step: {context.current_step}. Uploaded invoices: {[inv.invoice_number for inv in context.invoices]}"
-
-        prompt = f"""
-You are an AI accounting assistant.
-
-Client context:
-{context_summary}
-
-Extract these fields from the invoice text below as JSON with keys:
-supplier, date, invoice_number, total, vat.
-
-⚠️ Output only valid JSON — no explanations, no markdown, no extra text.
-
-Invoice Text:
-\"\"\"
-{ocr_text}
-\"\"\"
-"""
-
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
+            messages=[system_prompt, user_prompt],
+            temperature=0
         )
-
-        raw_response = response.choices[0].message.content
-        print("🧠 GPT RAW OUTPUT:", raw_response)
-        data = clean_gpt_json_response(raw_response)
-
-        # Normalize numeric fields
-        if isinstance(data, dict):
-            for key in ["total", "vat"]:
-                if key in data and isinstance(data[key], str):
-                    try:
-                        data[key] = float(data[key].replace(",", "."))
-                    except ValueError:
-                        pass
-
-        # ✅ Log messages to MessageHistory
-        context_manager.log_message(db, client_id, "user", prompt)
-        context_manager.log_message(db, client_id, "assistant", raw_response)
-
+        tool_invocation = json.loads(response.choices[0].message.content)
     except Exception as e:
-        print("🔥 GPT EXCEPTION:")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"OpenAI API error: {e}")
+        raise HTTPException(status_code=500, detail=f"Tool selection error: {e}")
 
-    # Register invoice if possible
-    invoice_number = data.get("invoice_number") if isinstance(data, dict) else None
+    # 6. Ensure the model asked for parse_invoice
+    if tool_invocation.get("tool") != "parse_invoice":
+        raise HTTPException(status_code=400, detail="GPT did not choose parse_invoice as expected.")
+
+    # 7. Now we call parse_invoice_tool ourselves, passing file_b64
+    try:
+        tool_result = tool_registry.call("parse_invoice", {"file_bytes": file_b64})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"parse_invoice tool error: {e}")
+
+    # 8. Log the result as an “assistant” message
+    raw_tool_output = json.dumps(tool_result)
+    context_manager.log_message(db, client_id, "assistant", raw_tool_output)
+    context_manager.auto_summarize_if_needed(db, client_id)
+
+    # 9. Persist the invoice if invoice_number exists
+    invoice_number = tool_result.get("invoice_number")
     if invoice_number:
-        invoice = context_manager.add_invoice(db, client_id, invoice_number)
-        invoice.ocr_text = ocr_text
-        invoice.prompt_used = prompt
-        invoice.llm_response_raw = raw_response
+        inv = context_manager.add_invoice(db, client_id, invoice_number)
+        inv.ocr_text = ""  # original OCR is inside the tool already
+        inv.prompt_used = json.dumps(model_ctx.dict(), default=str)
+        inv.llm_response_raw = raw_tool_output
         db.commit()
 
         context_manager.update_context_step(db, client_id, "invoice_processed")
-        context_manager.update_last_message(db, client_id, f"Processed invoice {invoice_number}")
+        context_manager.update_last_message(db, client_id, f"Parsed invoice {invoice_number}")
 
-    context = context_manager.get_context(db, client_id)
-
-    return {
-        "extracted_text": ocr_text,
-        "structured_data": data,
-        "context": {
-            "client_id": context.client_id,
-            "current_step": context.current_step,
-            "last_message": context.last_message,
-            "uploaded_invoices": [
-                {
-                    "invoice_number": inv.invoice_number,
-                    "status": inv.status,
-                    "date_uploaded": inv.date_uploaded.isoformat(),
-                }
-                for inv in context.invoices
-            ],
-        },
-    }
+    return {"structured_data": tool_result}
