@@ -35,7 +35,7 @@ def _save_tokens(tokens: dict):
             json.dump(tokens, f)
             os.fsync(f.fileno())  # Ensure write to disk
     except Exception as e:
-        logger.error(f"Failed to save tokens: {str(e)}")
+        logger.error(f"Failed to save tokens: {e}")
         raise XeroToolError("Token storage failed")
 
 
@@ -64,27 +64,19 @@ def _refresh_access_token(tokens: dict) -> dict:
         "Content-Type": "application/x-www-form-urlencoded"
     }
 
-    try:
-        resp = requests.post(
-            TOKEN_URL,
-            headers=headers,
-            data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]}
-        )
+    resp = requests.post(
+        TOKEN_URL,
+        headers=headers,
+        data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]}
+    )
+    if resp.status_code == 400 and resp.json().get("error") == "invalid_grant":
+        os.remove(TOKEN_FILE)
+        raise XeroToolError("Refresh token expired - please reauthenticate")
 
-        if resp.status_code == 400:
-            error = resp.json().get("error")
-            if error == "invalid_grant":
-                os.remove(TOKEN_FILE)
-                raise XeroToolError("Refresh token expired - please reauthenticate")
-
-        resp.raise_for_status()
-        new_tokens = resp.json()
-        _save_tokens(new_tokens)
-        return new_tokens
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Token refresh failed: {str(e)}")
-        raise XeroToolError(f"Xero authentication failed: {str(e)}")
+    resp.raise_for_status()
+    new_tokens = resp.json()
+    _save_tokens(new_tokens)
+    return new_tokens
 
 
 def _get_headers() -> dict:
@@ -93,7 +85,6 @@ def _get_headers() -> dict:
         tokens = _load_tokens()
         with open(TENANT_FILE, "r") as f:
             tenant_id = f.read().strip()
-
         return {
             "Authorization": f"Bearer {tokens['access_token']}",
             "Xero-tenant-id": tenant_id,
@@ -101,7 +92,7 @@ def _get_headers() -> dict:
             "Accept": "application/json"
         }
     except Exception as e:
-        logger.error(f"Header generation failed: {str(e)}")
+        logger.error(f"Header generation failed: {e}")
         raise
 
 
@@ -113,11 +104,9 @@ def _validate_invoice_data(inputs: dict):
         "date": str,
         "line_items": list
     }
-
     for field, typ in required.items():
         if not isinstance(inputs.get(field), typ):
             raise XeroToolError(f"Invalid type for {field} - expected {typ.__name__}")
-
     if not inputs["line_items"]:
         raise XeroToolError("At least one line item required")
 
@@ -128,6 +117,7 @@ def book_payable_invoice_tool(inputs: dict) -> dict:
     - Better validation
     - CHF currency default
     - Detailed error handling
+    - **Sets InvoiceNumber** so it shows up in Xero UI
     """
     try:
         _validate_invoice_data(inputs)
@@ -137,7 +127,6 @@ def book_payable_invoice_tool(inputs: dict) -> dict:
             datetime.strptime(inputs["date"], "%d.%m.%Y").strftime("%Y-%m-%d")
             if "." in inputs["date"] else inputs["date"]
         )
-
         due_date = (
             datetime.strptime(inputs["due_date"], "%d.%m.%Y").strftime("%Y-%m-%d")
             if inputs.get("due_date") and "." in inputs["due_date"]
@@ -153,58 +142,50 @@ def book_payable_invoice_tool(inputs: dict) -> dict:
                     "Quantity": 1,
                     "UnitAmount": float(li["amount"]),
                     "AccountCode": li["account_code"],
-                    "TaxType": "INPUT"  # For Swiss VAT
+                    "TaxType": "INPUT"
                 })
             except (KeyError, ValueError) as e:
-                raise XeroToolError(f"Invalid line item {idx + 1}: {str(e)}")
+                raise XeroToolError(f"Invalid line item {idx + 1}: {e}")
 
         # Build payload
         payload = {
             "Invoices": [{
-                "Type": "ACCPAY",
-                "Contact": {"Name": inputs["supplier"]},
-                "Date": invoice_date,
-                "DueDate": due_date,
-                "LineAmountTypes": "Inclusive",  # For Swiss invoices
-                "LineItems": items,
-                "Reference": inputs["invoice_number"],
-                "CurrencyCode": inputs.get("currency_code", "CHF"),  # Default to CHF
-                "Status": "DRAFT"
+                "Type":            "ACCPAY",
+                "Contact":         {"Name": inputs["supplier"]},
+                "Date":            invoice_date,
+                "DueDate":         due_date,
+                "LineAmountTypes": "Inclusive",
+                "LineItems":       items,
+                "InvoiceNumber":   inputs["invoice_number"],   # ← **THIS** is the bill # field
+                "Reference":       inputs["invoice_number"],   # optional, your choice
+                "CurrencyCode":    inputs.get("currency_code", "CHF"),
+                "Status":          "DRAFT"
             }]
         }
 
-        logger.debug(f"Xero payload: {json.dumps(payload, indent=2)}")
+        logger.debug("Xero payload: %s", json.dumps(payload, indent=2))
 
         # API request with retries
         for attempt in range(3):
-            try:
-                headers = _get_headers()
-                resp = requests.post(INVOICE_URL, headers=headers, json=payload, timeout=30)
+            headers = _get_headers()
+            resp = requests.post(INVOICE_URL, headers=headers, json=payload, timeout=30)
 
-                if resp.status_code == 401 and attempt < 2:
-                    _refresh_access_token(_load_tokens())
-                    continue
+            if resp.status_code == 401 and attempt < 2:
+                _refresh_access_token(_load_tokens())
+                continue
 
-                resp.raise_for_status()
-                inv = resp.json()["Invoices"][0]
-                return {
-                    "xero_invoice_id": inv["InvoiceID"],
-                    "status": inv["Status"],
-                    "total": inv["Total"],
-                    "due_date": inv["DueDate"]
-                }
-
-            except requests.exceptions.RequestException as e:
-                if attempt == 2:
-                    error_detail = getattr(e, "response", {}).text
-                    logger.error(f"Xero API failure: {str(e)} - Response: {error_detail}")
-                    raise XeroToolError(
-                        f"Failed to book invoice after retries: {str(e)}",
-                        xero_response=error_detail
-                    )
+            resp.raise_for_status()
+            inv = resp.json()["Invoices"][0]
+            return {
+                "xero_invoice_id": inv["InvoiceID"],
+                "status":          inv["Status"],
+                "total":           inv["Total"],
+                "due_date":        inv["DueDate"],
+                "reference":       inv.get("Reference")
+            }
 
     except XeroToolError:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise XeroToolError(f"System error: {str(e)}")
+        logger.error(f"Unexpected error: {e}")
+        raise XeroToolError(f"System error: {e}")
