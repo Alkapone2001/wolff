@@ -8,6 +8,8 @@ import logging
 from datetime import datetime, timedelta
 from requests import HTTPError
 from dateutil.parser import parse as _parse_date
+from tools.xero_accounts import ensure_account_for_category
+from .xero_utils import _get_headers, XeroToolError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -198,16 +200,22 @@ def book_payable_invoice_tool(inputs: dict) -> dict:
         # 3) Build net line items
         items = []
         for idx, li in enumerate(inputs["line_items"]):
+            # Dynamic account code assignment!
+            if "category" in li:
+                li["account_code"] = ensure_account_for_category(li["category"])
+            account_code = li.get("account_code")
+            if not account_code:
+                raise XeroToolError(f"Missing account_code for line item {idx + 1}")
             try:
                 items.append({
-                    "Description": li.get("description", f"Item {idx+1}"),
-                    "Quantity":    1,
-                    "UnitAmount":  float(li["amount"]),
-                    "AccountCode": li["account_code"],
-                    "TaxType":     tax_type
+                    "Description": li.get("description", f"Item {idx + 1}"),
+                    "Quantity": 1,
+                    "UnitAmount": float(li["amount"]),
+                    "AccountCode": account_code,
+                    "TaxType": tax_type
                 })
             except Exception as e:
-                raise XeroToolError(f"Invalid line item {idx+1}: {e}")
+                raise XeroToolError(f"Invalid line item {idx + 1}: {e}")
 
         # 4) Invoice payload (exclusive)
         payload = {
