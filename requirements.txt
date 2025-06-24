@@ -11,3 +11,4 @@ psycopg2-binary
 pdf2image
 xero-python>=4.1.0
 requests
+rapidfuzz

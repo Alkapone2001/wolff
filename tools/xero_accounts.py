@@ -2,6 +2,7 @@ import threading
 import requests
 import re
 from .xero_utils import _get_headers, XeroToolError
+from rapidfuzz import fuzz
 
 _category_account_map = {}
 _code_set = set()
@@ -22,12 +23,12 @@ def get_all_accounts():
     return resp.json().get("Accounts", [])
 
 def best_match_account(category, account_map):
-    cat_tokens = tokenize(category)
+    """Find the existing account name with the highest fuzzy similarity to the category."""
     best_score = 0
     best_code = None
     for name, code in account_map.items():
-        acc_tokens = tokenize(name)
-        score = len(cat_tokens & acc_tokens)
+        # Use fuzz.token_sort_ratio for better natural-language similarity
+        score = fuzz.token_sort_ratio(category, name)
         if score > best_score:
             best_score = score
             best_code = code
