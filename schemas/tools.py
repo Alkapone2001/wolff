@@ -5,19 +5,22 @@ from typing import Dict, Any, List, Optional
 
 
 class ToolDefinition(BaseModel):
-    name: str                      # e.g. "parse_invoice"
-    description: str               # what the tool does
-    input_schema: Dict[str, Any]   # expected inputs
+    name: str
+    description: str
+    input_schema: Dict[str, Any]
+
 
 class ToolInvocation(BaseModel):
     invoice_number: str
     supplier:       str
-    date:           str            # YYYY-MM-DD
-    due_date:       str            # YYYY-MM-DD
+    date:           str             # e.g. "2024-03-25"
+    due_date:       Optional[str] = None
     line_items:     List[Dict[str, Any]]
-    currency_code: Optional[str] = "USD"
+    currency_code:  Optional[str] = "USD"
+    total:          float           # gross total including VAT
+    vat_rate:       float           # VAT percentage, e.g. 8.10
+
 
 class ToolResult(BaseModel):
-    # allow any extra fields so you can return whatever your tool produces
     class Config:
-        extra = 'allow'
+        extra = "allow"
