@@ -10,7 +10,7 @@ import httpx
 from datetime import datetime, timedelta
 from dateutil.parser import parse as _parse_date
 from requests import HTTPError
-from .xero_accounts import ensure_account_for_category_async as ensure_account_for_category
+from .xero_accounts import ensure_account_for_category_existing_only
 from .xero_utils import _get_headers, XeroToolError
 
 # Configure logging
@@ -178,7 +178,7 @@ async def book_payable_invoice_tool(inputs: dict) -> dict:
 
     async def resolve_line_item(li):
         category = li.get("category") or "General Expenses"
-        acct_code = await ensure_account_for_category(category)
+        acct_code = await ensure_account_for_category_existing_only(category)
         logger.info(f"USING AccountCode {acct_code} for category '{category}'")
         return {
             "Description": li.get("description", ""),
