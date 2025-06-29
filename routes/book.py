@@ -4,6 +4,7 @@ from database import SessionLocal
 from schemas.tools import ToolInvocation, ToolResult
 from tools.book_payable_invoice import book_payable_invoice_tool  # NEW: this is now async!
 from tools.categorize_expense import categorize_expense_tool_async
+from tools.xero_accounts import get_all_expense_accounts
 
 router = APIRouter(tags=["booking"])
 
@@ -41,3 +42,11 @@ async def book_invoice(payload: ToolInvocation, db: Session = Depends(get_db)):
 def account_mapping():
     from tools.xero_accounts import _category_account_map
     return _category_account_map
+
+@router.get("/accounts/expense/")
+async def get_expense_accounts():
+    """
+    Returns all Xero EXPENSE accounts (name and code) as a list.
+    """
+    return await get_all_expense_accounts()
+

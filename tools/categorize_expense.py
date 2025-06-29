@@ -11,13 +11,21 @@ client = OpenAI()
 
 def categorize_expense_tool(inputs: dict) -> dict:
     """
-    Synchronously calls OpenAI to categorize line items.
+    Synchronously calls OpenAI to categorize line items from ALLOWED categories only.
     """
+    import json
+    import re
+    from openai import OpenAI
+    client = OpenAI()
+
     invoice = inputs.get("invoice_number", "")
     supplier = inputs.get("supplier", "")
     items = inputs.get("line_items", [])
+    allowed_categories = inputs.get("allowed_categories", [])
+
     prompt = f"""
 You are an accounting assistant. Given the supplier and line items, categorize each.
+ONLY use a category from this list: {allowed_categories}
 
 Return exactly JSON:
 {{
@@ -52,7 +60,5 @@ Line Items: {json.dumps(items)}
     return clean(raw)
 
 async def categorize_expense_tool_async(inputs: dict) -> dict:
-    """
-    Async wrapper: runs categorize_expense_tool in a threadpool for event-loop safety.
-    """
+    import anyio
     return await anyio.to_thread.run_sync(categorize_expense_tool, inputs)

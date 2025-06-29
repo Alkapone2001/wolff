@@ -34,11 +34,14 @@ async def categorize_expense(
     if not client_id or not invoice_number or not supplier or not isinstance(line_items, list):
         raise HTTPException(status_code=400, detail="Missing or invalid fields in request body")
 
-    # 1) Build MCP context (memory + recent messages)
     try:
         model_ctx: ModelContext = build_model_context(db, client_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Context build error: {e}")
+    except Exception:
+        get_or_create_context(db, client_id)
+        try:
+            model_ctx: ModelContext = build_model_context(db, client_id)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Context build error (after create): {e}")
 
     model_ctx.messages.append(
         MessageItem(
@@ -59,7 +62,12 @@ async def categorize_expense(
         )
     model_ctx.tools = all_tools
 
-    # 2) Tool selection by GPT
+    # Get allowed categories from Xero
+    from tools.xero_accounts import get_all_expense_accounts
+    allowed_accounts = await get_all_expense_accounts()
+    allowed_categories = [a["name"] for a in allowed_accounts]
+
+    # 2) Tool selection by GPT (unchanged)
     from openai import OpenAI
     client = OpenAI()
 
@@ -96,19 +104,20 @@ async def categorize_expense(
     if tool_invocation.get("tool") != "categorize_expense":
         raise HTTPException(status_code=400, detail=f"GPT did not choose categorize_expense. Got: {tool_invocation}")
 
-    # 3) Now call the tool registry
+    # 3) Now call the tool registry, passing allowed_categories
     inputs = {
         "client_id": client_id,
         "invoice_number": invoice_number,
         "supplier": supplier,
-        "line_items": line_items
+        "line_items": line_items,
+        "allowed_categories": allowed_categories
     }
     try:
         tool_result = tool_registry.call("categorize_expense", inputs)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"categorize_expense tool error: {e}")
 
-    # 4) Log, step, return
+    # 4) Log, step, return (unchanged)
     raw_tool_output = json.dumps(tool_result)
     log_message(db, client_id, "assistant", raw_tool_output)
     auto_summarize_if_needed(db, client_id)
