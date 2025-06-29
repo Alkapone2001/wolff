@@ -8,8 +8,10 @@ from tool_registry import tool_registry
 from context_manager import build_model_context, log_message, auto_summarize_if_needed, get_or_create_context, update_context_step, update_last_message
 from datetime import datetime
 import json
+import logging
 
 router = APIRouter(tags=["Categorize Expense"])
+logger = logging.getLogger("routes.categorize")
 
 def get_db():
     db = SessionLocal()
@@ -19,32 +21,11 @@ def get_db():
         db.close()
 
 @router.post("/categorize-expense/")
-def categorize_expense(
+async def categorize_expense(
     request: Request,
     payload: dict = Body(...),
     db: Session = Depends(get_db)
 ):
-    """
-    Expects JSON body:
-      {
-        "client_id": "test_client",
-        "invoice_number": "INV-001",
-        "supplier": "Lakeside Business Center AG",
-        "line_items": [
-          { "description": "Office chairs", "amount": 200 },
-          { "description": "Stationery", "amount": 50 }
-        ]
-      }
-
-    Returns:
-      {
-        "categories": [
-          { "description": "Office chairs", "category": "Office Furniture" },
-          { "description": "Stationery", "category": "Office Supplies" }
-        ]
-      }
-    """
-
     client_id = payload.get("client_id")
     invoice_number = payload.get("invoice_number")
     supplier = payload.get("supplier")
@@ -59,19 +40,14 @@ def categorize_expense(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Context build error: {e}")
 
-    # 2) Append a “user” message asking to categorize this invoice
     model_ctx.messages.append(
         MessageItem(
             role="user",
-            content=(
-                f"Please categorize invoice {invoice_number} from supplier {supplier}. "
-                f"Line items: {json.dumps(line_items)}"
-            ),
+            content=f"Please categorize invoice {invoice_number} from supplier {supplier}. Line items: {json.dumps(line_items)}",
             timestamp=datetime.utcnow()
         )
     )
 
-    # 3) Inject list of all registered tools into the context
     all_tools = []
     for name, info in tool_registry.list_tools().items():
         all_tools.append(
@@ -83,7 +59,10 @@ def categorize_expense(
         )
     model_ctx.tools = all_tools
 
-    # 4) Ask GPT to choose "categorize_expense"
+    # 2) Tool selection by GPT
+    from openai import OpenAI
+    client = OpenAI()
+
     system_prompt = {
         "role": "system",
         "content": json.dumps(model_ctx.dict(), default=str)
@@ -91,14 +70,10 @@ def categorize_expense(
     user_prompt = {
         "role": "user",
         "content": (
-            "You have a tool called \"categorize_expense\".  "
-            "Simply respond with JSON: {\"tool\": \"categorize_expense\"}  "
-            "— do NOT attempt to supply any additional fields yourself."
+            "Respond with ONLY JSON: {\"tool\": \"categorize_expense\"}. "
+            "Do not write anything else. Do not add notes."
         )
     }
-
-    from openai import OpenAI
-    client = OpenAI()
 
     try:
         response = client.chat.completions.create(
@@ -106,15 +81,22 @@ def categorize_expense(
             messages=[system_prompt, user_prompt],
             temperature=0
         )
-        tool_invocation = json.loads(response.choices[0].message.content)
+        raw = response.choices[0].message.content
+        logger.info(f"OpenAI tool select raw: {repr(raw)}")
+        if not raw or not raw.strip():
+            raise HTTPException(status_code=500, detail="LLM response was empty. (Check OpenAI API or prompt!)")
+        try:
+            tool_invocation = json.loads(raw)
+        except Exception as e:
+            logger.error(f"Failed to parse LLM output: {repr(raw)}")
+            raise HTTPException(status_code=500, detail=f"Tool selection error: {e}. Raw output: {repr(raw)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tool selection error: {e}")
 
-    # 5) Verify the model asked for categorize_expense
     if tool_invocation.get("tool") != "categorize_expense":
-        raise HTTPException(status_code=400, detail="GPT did not choose categorize_expense")
+        raise HTTPException(status_code=400, detail=f"GPT did not choose categorize_expense. Got: {tool_invocation}")
 
-    # 6) Now call the tool ourselves with the real inputs
+    # 3) Now call the tool registry
     inputs = {
         "client_id": client_id,
         "invoice_number": invoice_number,
@@ -126,20 +108,16 @@ def categorize_expense(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"categorize_expense tool error: {e}")
 
-    # 7) Log the tool’s output as an “assistant” message
+    # 4) Log, step, return
     raw_tool_output = json.dumps(tool_result)
     log_message(db, client_id, "assistant", raw_tool_output)
     auto_summarize_if_needed(db, client_id)
-
-    # 8) Optionally, advance the client’s step (if you’re tracking a simple state)
-    #    For example: after categorization, move from "invoice_parsed" → "invoice_categorized"
     try:
         ctx = get_or_create_context(db, client_id)
         if ctx.current_step == "invoice_parsed":
             update_context_step(db, client_id, "invoice_categorized")
             update_last_message(db, client_id, f"Categorized invoice {invoice_number}")
-    except:
-        pass  # ignore if no change
+    except Exception:
+        pass
 
-    # 9) Return the suggested categories to the caller
     return {"categories": tool_result.get("categories", [])}

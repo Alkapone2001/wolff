@@ -1,6 +1,6 @@
 # schemas/tools.py
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 
 
@@ -13,14 +13,13 @@ class ToolDefinition(BaseModel):
 class ToolInvocation(BaseModel):
     invoice_number: str
     supplier:       str
-    date:           str             # e.g. "2024-03-25"
+    date:           str                         # e.g. "2024-03-25"
     due_date:       Optional[str] = None
     line_items:     List[Dict[str, Any]]
-    currency_code:  Optional[str] = "USD"
-    total:          float           # gross total including VAT
-    vat_rate:       float           # VAT percentage, e.g. 8.10
-
+    currency_code:  Optional[str] = Field(default="USD")
+    total:          float                       # gross total including VAT
+    vat_rate:       float                       # VAT percentage, e.g. 8.10
 
 class ToolResult(BaseModel):
     class Config:
-        extra = "allow"
+        extra = "allow"                        # allow extra fields (for tool responses)
