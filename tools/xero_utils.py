@@ -16,7 +16,11 @@ class XeroToolError(Exception):
         self.xero_response = xero_response
         super().__init__(message)
 
-def _load_tokens():
+def _load_tokens() -> dict:
+    """
+    Loads the current Xero OAuth tokens from disk.
+    Raises XeroToolError if not found or corrupted.
+    """
     try:
         with open(TOKEN_FILE, "r") as f:
             return json.load(f)
@@ -26,6 +30,9 @@ def _load_tokens():
         raise XeroToolError("Corrupted token file - please reauthenticate")
 
 def _get_headers() -> dict:
+    """
+    Returns a dict of HTTP headers for authenticating to Xero.
+    """
     tokens = _load_tokens()
     with open(TENANT_FILE, "r") as f:
         tenant_id = f.read().strip()
@@ -35,3 +42,7 @@ def _get_headers() -> dict:
         "Content-Type":    "application/json",
         "Accept":          "application/json"
     }
+
+# If you want, you can future-proof with:
+# async def _get_headers_async() -> dict:
+#     return _get_headers()

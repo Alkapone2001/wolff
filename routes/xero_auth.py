@@ -1,7 +1,7 @@
 # routes/xero_auth.py
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, PlainTextResponse
-import os, json, requests
+import os, json, requests, asyncio
 
 router = APIRouter()
 
@@ -20,9 +20,9 @@ def connect():
     return RedirectResponse(url)
 
 @router.get("/xero/callback")
-def callback(request: Request):
+async def callback(request: Request):
     code = request.query_params["code"]
-    # Exchange code for tokens
+    # Exchange code for tokens (sync HTTP ok here)
     resp = requests.post(
         "https://identity.xero.com/connect/token",
         data={
@@ -33,14 +33,16 @@ def callback(request: Request):
         auth=(CLIENT_ID, CLIENT_SECRET),
     )
     tokens = resp.json()
-    # Save tokens and tenant_id for later
-    with open("/app/xero_token.json","w") as f:
-        json.dump(tokens, f)
+    # Save tokens (async, in thread pool)
+    def _write_tokens(tokens):
+        with open("/app/xero_token.json", "w") as f:
+            json.dump(tokens, f)
+    await asyncio.to_thread(_write_tokens, tokens)
+
     # Grab the first tenant (your org)
     tenant_id = requests.get(
       "https://api.xero.com/connections",
       headers={"Authorization":f"Bearer {tokens['access_token']}"}
     ).json()[0]["tenantId"]
-    with open("/app/xero_tenant_id.txt","w") as f:
-        f.write(tenant_id)
+    await asyncio.to_thread(lambda: open("/app/xero_tenant_id.txt", "w").write(tenant_id))
     return PlainTextResponse("✔️ Xero tokens saved.")

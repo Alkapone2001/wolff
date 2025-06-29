@@ -1,63 +1,51 @@
-import threading
-import requests
+import asyncio
+import httpx
 import re
-from .xero_utils import _get_headers, XeroToolError
 from rapidfuzz import fuzz
+from .xero_utils import _get_headers, XeroToolError
 
+# In-memory cache (per process)
 _category_account_map = {}
 _code_set = set()
-_account_map_lock = threading.Lock()
+_cache_lock = asyncio.Lock()
 
-def normalize(s):
-    """Lowercase, strip spaces and non-alphanumerics."""
-    return re.sub(r'\W+', '', s or '').lower()
+KNOWN_GOOD_EXPENSE_CODE = "400"  # Make sure in Xero this code is valid for your VAT
 
-def tokenize(s):
-    """Returns a set of lowercase words."""
-    return set(re.findall(r'\w+', s.lower()))
+def normalize(s: str) -> str:
+    """Lowercase and strip all non-word characters."""
+    return re.sub(r"\W+", "", (s or "")).lower()
 
-def get_all_accounts():
+async def _fetch_accounts() -> list:
+    """Fetch all accounts from Xero and cache them."""
     headers = _get_headers()
-    resp = requests.get("https://api.xero.com/api.xro/2.0/Accounts", headers=headers, timeout=15)
-    resp.raise_for_status()
-    return resp.json().get("Accounts", [])
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get("https://api.xero.com/api.xro/2.0/Accounts", headers=headers)
+        resp.raise_for_status()
+        return resp.json().get("Accounts", [])
 
-def best_match_account(category, account_map):
-    """Find the existing account name with the highest fuzzy similarity to the category."""
-    best_score = 0
-    best_code = None
-    for name, code in account_map.items():
-        # Use fuzz.token_sort_ratio for better natural-language similarity
-        score = fuzz.token_sort_ratio(category, name)
-        if score > best_score:
-            best_score = score
-            best_code = code
-    return best_code
-
-def ensure_account_for_category(category: str) -> str:
+async def ensure_account_for_category_async(category: str) -> str:
     """
-    Returns a valid Xero EXPENSE account code for the category.
-    If not present, tries to create. If creation fails, finds the most similar existing EXPENSE account by words.
+    Returns an EXPENSE account code for this category.
+    Never assigns '400' dynamically, but falls back to it if needed.
     """
-    with _account_map_lock:
-        orig_category = category
+    async with _cache_lock:
+        # Populate cache if empty
         if not _category_account_map:
-            for acc in get_all_accounts():
+            for acc in await _fetch_accounts():
                 if acc.get("Type") == "EXPENSE":
                     _category_account_map[acc["Name"]] = acc["Code"]
-                    _code_set.add(acc["Code"])
-        cat_norm = normalize(category)
-        # 1. Exact match first
-        for name in _category_account_map:
-            if normalize(name) == cat_norm:
-                return _category_account_map[name]
+                    _code_set.add(str(acc["Code"]))
 
-        # 2. Try to create new account
+        norm = normalize(category)
+        # 1. Try exact name match
+        for name, code in _category_account_map.items():
+            if normalize(name) == norm:
+                return str(code)
+
+        # 2. Dynamically create a new EXPENSE account (skipping '400')
         code = 4000
-        while str(code) in _code_set:
+        while str(code) in _code_set or str(code) == "400":
             code += 1
-        _code_set.add(str(code))
-
         payload = {
             "Accounts": [{
                 "Name": category,
@@ -66,23 +54,25 @@ def ensure_account_for_category(category: str) -> str:
             }]
         }
         headers = _get_headers()
-        try:
-            resp = requests.post("https://api.xero.com/api.xro/2.0/Accounts", headers=headers, json=payload, timeout=15)
-            resp.raise_for_status()
-            new_acc = resp.json()["Accounts"][0]
-            _category_account_map[new_acc["Name"]] = new_acc["Code"]
-            return new_acc["Code"]
-        except requests.HTTPError as e:
-            print(f"❌ Xero Accounts API error with '{category}':", getattr(e.response, "text", str(e)))
-            # 3. Fallback: Use best-matching existing expense account
-            match_code = best_match_account(category, _category_account_map)
-            if match_code:
-                print(f"⚠️  Using most similar existing account for '{category}': {match_code}")
-                return match_code
-            # As last resort, use any existing EXPENSE account
-            if _category_account_map:
-                print("⚠️  Using first available EXPENSE account as last resort.")
-                return next(iter(_category_account_map.values()))
-            raise XeroToolError(
-                f"Failed to create or fallback for account category '{orig_category}': {getattr(e, 'response', e)}"
-            )
+        async with httpx.AsyncClient(timeout=15) as client:
+            try:
+                resp = await client.post(
+                    "https://api.xero.com/api.xro/2.0/Accounts",
+                    headers=headers,
+                    json=payload
+                )
+                resp.raise_for_status()
+                new = resp.json()["Accounts"][0]
+                _category_account_map[new["Name"]] = new["Code"]
+                _code_set.add(str(new["Code"]))
+                return str(new["Code"])
+            except httpx.HTTPStatusError as err:
+                # 3. Fuzzy fallback: pick best match by similarity
+                if _category_account_map:
+                    best = max(
+                        _category_account_map.items(),
+                        key=lambda kv: fuzz.token_sort_ratio(category, kv[0])
+                    )[1]
+                    return str(best)
+                # 4. As last resort, use KNOWN_GOOD_EXPENSE_CODE (usually "400")
+                return KNOWN_GOOD_EXPENSE_CODE
