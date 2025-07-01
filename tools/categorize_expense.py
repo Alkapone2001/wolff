@@ -1,78 +1,58 @@
 # tools/categorize_expense.py
 
 import json
-import re
-from openai import OpenAI
-from dotenv import load_dotenv
-
-load_dotenv()
-client = OpenAI()
+from rapidfuzz import process, fuzz
 
 def categorize_expense_tool(inputs: dict) -> dict:
     """
-    inputs: {
-      "client_id": "test_client",
-      "invoice_number": "INV-001",
-      "supplier": "Lakeside Business Center AG",
-      "line_items": [
-         { "description": "Office chairs", "amount": 200 },
-         { "description": "Stationery", "amount": 50 }
-      ]
-    }
-
-    Returns: {
-      "invoice_number": "INV-001",
-      "categories": [
-        { "description": "Office chairs", "category": "Office Furniture" },
-        { "description": "Stationery", "category": "Office Supplies" }
-      ]
-    }
+    inputs:
+      - allowed_accounts: List[{"name": str, "code": str}]
+      - line_items: List[{"description": str, "amount": number}]
+    Returns:
+      { "categories": [
+          {
+            "description": ...,
+            "category": <matched account name>,
+            "account_name": <matched account name>,
+            "account_code": <matched account code>
+          },
+          ...
+       ] }
     """
+    allowed_accounts = inputs.get("allowed_accounts", [])
+    items = inputs.get("line_items", [])
 
-    invoice_number = inputs.get("invoice_number", "")
-    supplier = inputs.get("supplier", "")
-    line_items = inputs.get("line_items", [])
+    # Prepare list of just the names for matching
+    allowed_names = [acc["name"] for acc in allowed_accounts]
 
-    # 1. Convert line_items to JSON string
-    items_json = json.dumps(line_items)
+    results = []
+    for item in items:
+        desc = item.get("description", "") or ""
+        # Fuzzy match description → one of the allowed account names
+        match_name, score, idx = process.extractOne(
+            desc,
+            allowed_names,
+            scorer=fuzz.partial_ratio
+        )
+        if score >= 60:
+            account = allowed_accounts[idx]
+        else:
+            # fallback to General Expenses
+            account = next(
+                (a for a in allowed_accounts if a["name"].lower().startswith("general")),
+                allowed_accounts[0] if allowed_accounts else {"name": "General Expenses", "code": "400"}
+            )
 
-    # 2. Build a prompt asking the LLM to suggest categories
-    prompt = f"""
-You are an accounting assistant.  Given an invoice with its supplier and line items, 
-suggest an account/category for each line.  Return EXACTLY valid JSON in this format:
+        results.append({
+            "description": desc,
+            "category": account["name"],
+            "account_name": account["name"],
+            "account_code": account["code"]
+        })
 
-{{
-  "invoice_number": "{invoice_number}",
-  "categories": [
-    {{ "description": "<desc1>", "category": "<GL account category1>" }},
-    {{ "description": "<desc2>", "category": "<GL account category2>" }},
-    …
-  ]
-}}
+    return {"categories": results}
 
-Invoice Number: {invoice_number}
-Supplier: {supplier}
-Line Items: {items_json}
-"""
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You categorize invoice line items."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0,
-    )
-    raw = response.choices[0].message.content
-
-    # 3. Strip markdown fences & parse JSON
-    def clean_json(text: str):
-        t = text.strip()
-        t = re.sub(r"^```(?:json)?", "", t)
-        t = re.sub(r"```$", "", t)
-        try:
-            return json.loads(t)
-        except json.JSONDecodeError:
-            return {}
-
-    return clean_json(raw)
+async def categorize_expense_tool_async(inputs: dict) -> dict:
+    import anyio
+    return await anyio.to_thread.run_sync(categorize_expense_tool, inputs)

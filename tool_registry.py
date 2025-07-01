@@ -1,6 +1,7 @@
 # tool_registry.py
 
 from typing import Dict, Any, Callable
+from tools.describe_invoice import describe_invoice_tool
 
 # A type alias: a “tool” is any function that takes a dict and returns a dict.
 ToolFn = Callable[[Dict[str, Any]], Dict[str, Any]]
@@ -51,12 +52,13 @@ tool_registry.register(
 tool_registry.register(
     name="categorize_expense",
     fn=categorize_expense_tool,
-    description="Given client_id, invoice_number, supplier and line_items, suggest GL category per line.",
+    description="Given client_id, invoice_number, supplier and line_items, suggest GL category per line. Uses allowed_accounts list (name+code).",
     input_schema={
         "client_id":      "string",
         "invoice_number": "string",
         "supplier":       "string",
-        "line_items":     "List<{description:string,amount:number}>"
+        "line_items":     "List<{description:string,amount:number}>",
+        "allowed_accounts": "List<{name:string,code:string}>"
     }
 )
 
@@ -73,5 +75,19 @@ tool_registry.register(
         "currency_code":  "string"
     }
 )
+
+tool_registry.register(
+    "describe_invoice",
+    describe_invoice_tool,
+    "Generate a short, clear description of this invoice.",
+    {
+        "supplier": "Supplier name",
+        "invoice_number": "Invoice number",
+        "date": "Date",
+        "total": "Total amount",
+        "line_items": "List of line item descriptions/amounts"
+    }
+)
+
 
 print("✅ Registered tools:", list(tool_registry.list_tools().keys()))

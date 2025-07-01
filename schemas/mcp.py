@@ -1,6 +1,6 @@
 # schemas/mcp.py
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from schemas.tools import ToolDefinition  # import ToolDefinition
@@ -12,7 +12,7 @@ class MessageItem(BaseModel):
 
 class Memory(BaseModel):
     last_summary: Optional[str] = None
-    additional_data: Optional[Dict[str, Any]] = {}  # e.g., {"current_step": "...", "last_message": "..."}
+    additional_data: Optional[Dict[str, Any]] = Field(default_factory=dict)  # Safe mutable default
 
 class ModelContext(BaseModel):
     memory: Memory
