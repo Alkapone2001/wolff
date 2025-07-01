@@ -5,7 +5,10 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from schemas.mcp import ModelContext, MessageItem, ToolDefinition
 from tool_registry import tool_registry
-from context_manager import build_model_context, log_message, auto_summarize_if_needed, get_or_create_context, update_context_step, update_last_message
+from context_manager import (
+    build_model_context, log_message, auto_summarize_if_needed,
+    get_or_create_context, update_context_step, update_last_message
+)
 from datetime import datetime
 import json
 import logging
@@ -62,12 +65,11 @@ async def categorize_expense(
         )
     model_ctx.tools = all_tools
 
-    # Get allowed categories from Xero
+    # 1. Get allowed Xero expense accounts (name+code)
     from tools.xero_accounts import get_all_expense_accounts
-    allowed_accounts = await get_all_expense_accounts()
-    allowed_categories = [a["name"] for a in allowed_accounts]
+    allowed_accounts = await get_all_expense_accounts()   # [{'name':..., 'code':...}, ...]
 
-    # 2) Tool selection by GPT (unchanged)
+    # 2. Tool selection by GPT (unchanged)
     from openai import OpenAI
     client = OpenAI()
 
@@ -104,20 +106,20 @@ async def categorize_expense(
     if tool_invocation.get("tool") != "categorize_expense":
         raise HTTPException(status_code=400, detail=f"GPT did not choose categorize_expense. Got: {tool_invocation}")
 
-    # 3) Now call the tool registry, passing allowed_categories
+    # 3. Now call the tool registry, passing allowed_accounts (NEW)
     inputs = {
         "client_id": client_id,
         "invoice_number": invoice_number,
         "supplier": supplier,
         "line_items": line_items,
-        "allowed_categories": allowed_categories
+        "allowed_accounts": allowed_accounts   # <-- this is now a list of dicts
     }
     try:
         tool_result = tool_registry.call("categorize_expense", inputs)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"categorize_expense tool error: {e}")
 
-    # 4) Log, step, return (unchanged)
+    # 4. Log, step, return (unchanged)
     raw_tool_output = json.dumps(tool_result)
     log_message(db, client_id, "assistant", raw_tool_output)
     auto_summarize_if_needed(db, client_id)
@@ -129,4 +131,5 @@ async def categorize_expense(
     except Exception:
         pass
 
+    # Return structure: each line item should now have description, category, account_code, account_name
     return {"categories": tool_result.get("categories", [])}

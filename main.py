@@ -17,6 +17,7 @@ import json
 import base64
 from routes.xero_auth import router as xero_auth_router
 import logging
+from routes.describe import router as describe_router
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +38,7 @@ app.include_router(book.router)
 app.include_router(batch_book.router)
 app.include_router(summarize.router)
 app.include_router(categorize.router)
+app.include_router(describe_router)
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,63 +1,57 @@
 # tools/categorize_expense.py
 
 import json
-import re
-import anyio
-from openai import OpenAI
-from dotenv import load_dotenv
-
-load_dotenv()
-client = OpenAI()
+from rapidfuzz import process, fuzz
 
 def categorize_expense_tool(inputs: dict) -> dict:
     """
-    Synchronously calls OpenAI to categorize line items from ALLOWED categories only.
+    inputs:
+      - allowed_accounts: List[{"name": str, "code": str}]
+      - line_items: List[{"description": str, "amount": number}]
+    Returns:
+      { "categories": [
+          {
+            "description": ...,
+            "category": <matched account name>,
+            "account_name": <matched account name>,
+            "account_code": <matched account code>
+          },
+          ...
+       ] }
     """
-    import json
-    import re
-    from openai import OpenAI
-    client = OpenAI()
-
-    invoice = inputs.get("invoice_number", "")
-    supplier = inputs.get("supplier", "")
+    allowed_accounts = inputs.get("allowed_accounts", [])
     items = inputs.get("line_items", [])
-    allowed_categories = inputs.get("allowed_categories", [])
 
-    prompt = f"""
-You are an accounting assistant. Given the supplier and line items, categorize each.
-ONLY use a category from this list: {allowed_categories}
+    # Prepare list of just the names for matching
+    allowed_names = [acc["name"] for acc in allowed_accounts]
 
-Return exactly JSON:
-{{
-  "invoice_number": "{invoice}",
-  "categories": [
-    {{ "description": "<desc>", "category": "<category name>" }},
-    ...
-  ]
-}}
+    results = []
+    for item in items:
+        desc = item.get("description", "") or ""
+        # Fuzzy match description → one of the allowed account names
+        match_name, score, idx = process.extractOne(
+            desc,
+            allowed_names,
+            scorer=fuzz.partial_ratio
+        )
+        if score >= 60:
+            account = allowed_accounts[idx]
+        else:
+            # fallback to General Expenses
+            account = next(
+                (a for a in allowed_accounts if a["name"].lower().startswith("general")),
+                allowed_accounts[0] if allowed_accounts else {"name": "General Expenses", "code": "400"}
+            )
 
-Supplier: {supplier}
-Line Items: {json.dumps(items)}
-"""
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Categorize expenses."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0
-    )
-    raw = resp.choices[0].message.content
+        results.append({
+            "description": desc,
+            "category": account["name"],
+            "account_name": account["name"],
+            "account_code": account["code"]
+        })
 
-    def clean(text: str) -> dict:
-        t = text.strip()
-        t = re.sub(r"^```(?:json)?", "", t)
-        t = re.sub(r"```$", "", t)
-        try:
-            return json.loads(t)
-        except json.JSONDecodeError:
-            return {}
-    return clean(raw)
+    return {"categories": results}
+
 
 async def categorize_expense_tool_async(inputs: dict) -> dict:
     import anyio
