@@ -23,6 +23,11 @@ TENANT_FILE    = "/app/xero_tenant_id.txt"
 TOKEN_URL      = "https://identity.xero.com/connect/token"
 INVOICE_URL    = "https://api.xero.com/api.xro/2.0/Invoices"
 TAXRATES_URL   = "https://api.xero.com/api.xro/2.0/TaxRates"
+ATTACHMENT_URL_FMT = "https://api.xero.com/api.xro/2.0/Invoices/{invoice_id}/Attachments/{filename}"
+
+# INTEGRATION REQUIREMENT:
+# You MUST have `accounting.attachments` in your Xero app scopes, AND you must re-authenticate
+# after adding it. Otherwise, attachments will always return 401 Unauthorized.
 
 class XeroToolError(Exception):
     def __init__(self, message, xero_response=None):
@@ -170,7 +175,6 @@ async def book_payable_invoice_tool(inputs: dict) -> dict:
         due_dt = invoice_dt + timedelta(days=30)
 
     vat_rate = float(inputs["vat_rate"])
-    # --- MAIN FIX: Use TaxType NONE for 0% VAT ---
     if vat_rate == 0:
         tax_type = "NONE"
     else:
@@ -184,7 +188,7 @@ async def book_payable_invoice_tool(inputs: dict) -> dict:
             "Description": li.get("description", ""),
             "Quantity": 1,
             "UnitAmount": float(li["amount"]),
-            "AccountCode": acct_code,   # This should be an EXPENSE account (4000+)
+            "AccountCode": acct_code,
             "TaxType": tax_type
         }
 
@@ -219,10 +223,62 @@ async def book_payable_invoice_tool(inputs: dict) -> dict:
                 xero_response=error_body
             ) from e
         inv = resp.json()["Invoices"][0]
-        return {
+
+        # --- PDF Attachment upload step ---
+        attachment_result = None
+        pdf_bytes_b64 = inputs.get("pdf_bytes")
+        if pdf_bytes_b64:
+            try:
+                pdf_bytes = base64.b64decode(pdf_bytes_b64)
+                invoice_id = inv["InvoiceID"]
+                filename = f"Invoice_{inv['InvoiceNumber']}.pdf"
+                attachment_url = ATTACHMENT_URL_FMT.format(invoice_id=invoice_id, filename=filename)
+
+                await asyncio.sleep(1)  # Xero may be eventually consistent
+
+                # Always use fresh headers and required keys only
+                attach_headers_raw = _get_headers()
+                attach_headers = {
+                    "Authorization":   attach_headers_raw["Authorization"],
+                    "Xero-tenant-id":  attach_headers_raw["Xero-tenant-id"],
+                    "Content-Type":    "application/pdf"
+                }
+
+                print("\n\n=== Xero Attachment Upload Debug ===")
+                print("Xero Attach Headers (without token):", {k: (v[:15]+"...") if k == "Authorization" else v for k,v in attach_headers.items()})
+                print("Xero Attach URL:", attachment_url)
+                print("Xero Attach PDF size:", len(pdf_bytes))
+                print("Reminder: You MUST have 'accounting.attachments' in your Xero app scopes and be authenticated with a token that includes it!\n")
+
+                async with httpx.AsyncClient(timeout=30) as attach_client:
+                    attach_resp = await attach_client.put(
+                        attachment_url,
+                        headers=attach_headers,
+                        content=pdf_bytes
+                    )
+
+                print("Xero Attach Response:", attach_resp.status_code, attach_resp.text)
+                logger.info(f"Attachment PUT response: {attach_resp.status_code}, body: {attach_resp.text}")
+
+                try:
+                    attach_resp.raise_for_status()
+                    attachment_result = {"attachment_status": "uploaded", "file_name": filename}
+                except httpx.HTTPStatusError:
+                    attachment_result = {
+                        "attachment_status": "failed",
+                        "error": attach_resp.text,
+                        "response_status": attach_resp.status_code
+                    }
+            except Exception as ex:
+                attachment_result = {"attachment_status": "failed", "error": str(ex)}
+
+        result = {
             "xero_invoice_id": inv["InvoiceID"],
             "status":          inv["Status"],
             "total":           inv["Total"],
             "due_date":        inv["DueDate"],
-            "reference":       inv.get("Reference")
+            "reference":       inv.get("Reference"),
         }
+        if attachment_result:
+            result.update(attachment_result)
+        return result
