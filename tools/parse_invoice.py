@@ -28,12 +28,24 @@ def parse_invoice_tool(inputs: dict) -> dict:
 
     # 2️⃣ Prompt OpenAI for structured fields
     prompt = f"""
-You are an accounting assistant. Extract exactly this JSON:
-  • supplier
-  • date
-  • invoice_number
-  • total
-  • vat_rate
+    You are an accounting assistant. Read the following OCR'd invoice text and extract structured data.
+
+    Return this JSON object:
+    {{
+      "supplier": string,
+      "date": string,
+      "invoice_number": string,
+      "total": number,
+      "vat_rate": number,
+      "line_items": [
+        {{
+          "description": string,
+          "quantity": number,
+          "amount": number
+        }},
+        ...
+      ]
+    }}
 
 Invoice Text:
 """ + ocr_text
@@ -108,7 +120,8 @@ Invoice Text:
         "taxable_base":  taxable_base,
         "discount_total":discount_total,
         "vat_amount":    vat_amount,
-        "net_subtotal":  net_subtotal
+        "net_subtotal":  net_subtotal,
+        "line_items": data.get("line_items", [])  # ✅ NEW
     }
 
 async def parse_invoice_tool_async(inputs: dict) -> dict:
