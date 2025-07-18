@@ -1,45 +1,43 @@
 # main.py
 
+import base64
+import json
+import logging
+from datetime import datetime
+
 from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+
 from database import SessionLocal, engine
 import models
-import context_manager  # <-- so you can use context_manager.log_message, etc
+import context_manager
+
+# Routers
 from routes import message_history, summarize, categorize, book, batch_book
-from schemas.mcp import ModelContext, MessageItem, Memory
-from schemas.tools import ToolDefinition
-from tool_registry import tool_registry
-from openai import OpenAI
-from dotenv import load_dotenv
-from datetime import datetime
-import json
-import base64
 from routes.xero_auth import router as xero_auth_router
-import logging
 from routes.describe import router as describe_router
 
-# Set up logging
+# Schemas and tool registry
+from schemas.mcp import ModelContext, MessageItem
+from schemas.tools import ToolDefinition
+from tool_registry import tool_registry
+
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# --- Logging Setup ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables (OPENAI_API_KEY etc.)
+# --- Environment and DB ---
 load_dotenv()
-
-# Create tables if they don’t exist
 models.Base.metadata.create_all(bind=engine)
 
+# --- FastAPI App ---
 app = FastAPI()
 
-# Include custom routers
-app.include_router(message_history.router)
-app.include_router(xero_auth_router)
-app.include_router(book.router)
-app.include_router(batch_book.router)
-app.include_router(summarize.router)
-app.include_router(categorize.router)
-app.include_router(describe_router)
-
+# --- Middleware and Routers ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -48,7 +46,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dependency to get DB session
+app.include_router(message_history.router)
+app.include_router(xero_auth_router)
+app.include_router(book.router)
+app.include_router(batch_book.router)
+app.include_router(summarize.router)
+app.include_router(categorize.router)
+app.include_router(describe_router)
+
+# --- Dependency ---
 def get_db():
     db = SessionLocal()
     try:
@@ -56,6 +62,7 @@ def get_db():
     finally:
         db.close()
 
+# --- Invoice Processing Endpoint ---
 @app.post("/process-invoice/")
 async def process_invoice(
     file: UploadFile = File(...),
@@ -63,11 +70,13 @@ async def process_invoice(
     db: Session = Depends(get_db)
 ):
     client_id = request.headers.get("X-Client-ID", "default_client")
-
     raw_bytes = await file.read()
-    file_b64 = base64.b64encode(raw_bytes).decode()  # Always valid padding
+    file_b64 = base64.b64encode(raw_bytes).decode()
 
-    # 1. Build the MCP context (memory + messages)
+    # Always ensure ClientContext exists (portable across laptops/databases)
+    context = context_manager.get_or_create_context(db, client_id)
+
+    # 1. Build Model Context (includes memory & tools)
     try:
         model_ctx: ModelContext = context_manager.build_model_context(db, client_id)
     except Exception as e:
@@ -81,20 +90,18 @@ async def process_invoice(
         )
     )
 
-    all_tools = []
-    for name, info in tool_registry.list_tools().items():
-        all_tools.append(
-            ToolDefinition(
-                name=name,
-                description=info["description"],
-                input_schema=info["input_schema"]
-            )
-        )
+    # Register tools (tool_registry)
+    all_tools = [
+        ToolDefinition(
+            name=name,
+            description=info["description"],
+            input_schema=info["input_schema"]
+        ) for name, info in tool_registry.list_tools().items()
+    ]
     model_ctx.tools = all_tools
 
-    # 2. Tool selection by LLM: robust JSON parsing!
+    # 2. LLM Tool Selection
     client = OpenAI()
-
     system_prompt = {
         "role": "system",
         "content": json.dumps(model_ctx.dict(), default=str)
@@ -128,13 +135,13 @@ async def process_invoice(
     if tool_invocation.get("tool") != "parse_invoice":
         raise HTTPException(status_code=400, detail=f"GPT did not choose parse_invoice. Got: {tool_invocation}")
 
-    # 3. Actually call your tool
+    # 3. Tool Execution
     try:
         tool_result = tool_registry.call("parse_invoice", {"file_bytes": file_b64})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"parse_invoice tool error: {e}")
 
-    # 4. Log, summarize, step, etc.
+    # 4. Log, summarize, and update context
     raw_tool_output = json.dumps(tool_result)
     context_manager.log_message(db, client_id, "assistant", raw_tool_output)
     context_manager.auto_summarize_if_needed(db, client_id)
